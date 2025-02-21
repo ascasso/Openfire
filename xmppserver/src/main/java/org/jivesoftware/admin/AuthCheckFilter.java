@@ -248,8 +248,12 @@ public class AuthCheckFilter implements Filter {
     {
         HttpServletRequest request = (HttpServletRequest)req;
         HttpServletResponse response = (HttpServletResponse)res;
-        // Do not allow framing; OF-997
-        response.setHeader("X-Frame-Options", JiveGlobals.getProperty("adminConsole.frame-options", "SAMEORIGIN"));
+        // Set security headers
+        response.setHeader("X-Frame-Options", JiveGlobals.getProperty("adminConsole.frame-options", "SAMEORIGIN")); // OF-997
+        response.setHeader("X-Content-Type-Options", "nosniff");
+        response.setHeader("X-XSS-Protection", "1; mode=block");
+        response.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+        
         // Reset the defaultLoginPage variable
         String loginPage = defaultLoginPage;
         if (loginPage == null) {
@@ -282,9 +286,11 @@ public class AuthCheckFilter implements Filter {
             User loggedUser = manager.getUser();
             boolean loggedAdmin = loggedUser == null ? false : adminManager.isUserAdmin(loggedUser.getUsername(), true);
             if (!haveOneTimeToken && !loggedAdmin && !authUserFromRequest(request)) {
+                Log.warn("Unauthorized access attempt to admin console from IP: " + request.getRemoteAddr());
                 response.sendRedirect(getRedirectURL(request, loginPage, null));
                 return;
             }
+            Log.info("Successful admin console access by user: " + loggedUser.getUsername() + " from IP: " + request.getRemoteAddr());
         }
         chain.doFilter(req, res);
     }
@@ -306,8 +312,10 @@ public class AuthCheckFilter implements Filter {
         // We're authenticated and authorised, so record the login,
         loginLimitManager.recordSuccessfulAttempt(userFromRequest, request.getRemoteAddr());
 
-        // Set the auth token
-        request.getSession().setAttribute("jive.admin.authToken", AuthToken.generateUserToken( userFromRequest ));
+        // Set the auth token and session parameters
+        final HttpSession session = request.getSession();
+        session.setAttribute("jive.admin.authToken", AuthToken.generateUserToken( userFromRequest ));
+        session.setMaxInactiveInterval(30 * 60); // 30 minute timeout
 
         // And proceed
         return true;
@@ -378,38 +386,6 @@ public class AuthCheckFilter implements Filter {
         return result;
     }
 
-    /**
-     * Checks if a particular IP address is on a list of addresses.
-     *
-     * The IP address is expected to be an IPv4 or IPv6 address. The list can contain IPv4 and IPv6 addresses, but also
-     * IPv4 and IP46 address ranges. Ranges can be expressed as dash separated strings (eg: "192.168.0.0-192.168.255.255")
-     * or in CIDR notation (eg: "192.168.0.0/16", "2001:db8::/48").
-     *
-     * @param list The list of addresses
-     * @param ipAddress the address to check
-     * @return <tt>true</tt> if the address is detected in the list, otherwise <tt>false</tt>.
-     * @deprecated Replaced by {@link IpUtils#isAddressInAnyOf(String, Set)}
-     */
-    @Deprecated(since = "5.0.0", forRemoval = true) // Remove in Openfire 5.1 or later.
-    public static boolean isOnList(@Nonnull final Set<String> list, @Nonnull final String ipAddress) {
-        return IpUtils.isAddressInAnyOf(ipAddress, list);
-    }
-
-    /**
-     * When the provided input is an IPv6 literal that is enclosed in brackets (the [] style as expressed in
-     * https://tools.ietf.org/html/rfc2732 and https://tools.ietf.org/html/rfc6874), this method returns the value
-     * stripped from those brackets (the IPv6 address, instead of the literal). In all other cases, the input value is
-     * returned.
-     *
-     * @param address The value from which to strip brackets.
-     * @return the input value, stripped from brackets if applicable.
-     * @deprecated Moved to {@link IpUtils#removeBracketsFromIpv6Address(String)}
-     */
-    @Deprecated(since = "5.0.0", forRemoval = true) // Remove in Openfire 5.1 or later.
-    @Nonnull
-    public static String removeBracketsFromIpv6Address(@Nonnull final String address) {
-        return IpUtils.removeBracketsFromIpv6Address(address);
-    }
 
     public static void loadSetupExcludes() {
         Arrays.stream(JiveGlobals.setupExcludePaths).forEach(AuthCheckFilter::addExclude);
