@@ -23,7 +23,7 @@
                     <plugin>
                         <groupId>org.jacoco</groupId>
                         <artifactId>jacoco-maven-plugin</artifactId>
-                        <version>0.8.10</version>
+                        <version>0.8.12</version>
                         <configuration>
                             <excludes>
                                 <exclude>**/*_jsp.class</exclude>
@@ -122,7 +122,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-war-plugin</artifactId>
-                <version>3.2.2</version>
+                <version>3.4.0</version>
                 <configuration>
                     <!-- Exclude JSP files, they will be compiled -->
                     <warSourceExcludes>**/*.jsp,**/*.jspf,WEB-INF/lib/*.*</warSourceExcludes>
@@ -193,7 +193,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
-                <version>3.1.2</version>
+                <version>3.5.2</version>
                 <configuration>
                     <systemPropertyVariables>
                         <log4j.configurationFile>${project.build.directory}/test-classes/log4j2-test-mvn.xml</log4j.configurationFile>
