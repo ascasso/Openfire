@@ -41,3 +41,4 @@ distribution/build/osx/
 .gradle
 
 aioxmpp
+.aider*

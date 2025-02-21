@@ -31,6 +31,7 @@ import javax.annotation.Nonnull;
 import javax.servlet.*;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
+import javax.servlet.http.HttpSession;
 import java.io.IOException;
 import java.net.URLDecoder;
 import java.net.URLEncoder;
@@ -386,6 +387,38 @@ public class AuthCheckFilter implements Filter {
         return result;
     }
 
+    /**
+     * Checks if a particular IP address is on a list of addresses.
+     *
+     * The IP address is expected to be an IPv4 or IPv6 address. The list can contain IPv4 and IPv6 addresses, but also
+     * IPv4 and IP46 address ranges. Ranges can be expressed as dash separated strings (eg: "192.168.0.0-192.168.255.255")
+     * or in CIDR notation (eg: "192.168.0.0/16", "2001:db8::/48").
+     *
+     * @param list The list of addresses
+     * @param ipAddress the address to check
+     * @return <tt>true</tt> if the address is detected in the list, otherwise <tt>false</tt>.
+     * @deprecated Replaced by {@link IpUtils#isAddressInAnyOf(String, Set)}
+     */
+    @Deprecated(since = "5.0.0", forRemoval = true) // Remove in Openfire 5.1 or later.
+    public static boolean isOnList(@Nonnull final Set<String> list, @Nonnull final String ipAddress) {
+        return IpUtils.isAddressInAnyOf(ipAddress, list);
+    }
+
+    /**
+     * When the provided input is an IPv6 literal that is enclosed in brackets (the [] style as expressed in
+     * https://tools.ietf.org/html/rfc2732 and https://tools.ietf.org/html/rfc6874), this method returns the value
+     * stripped from those brackets (the IPv6 address, instead of the literal). In all other cases, the input value is
+     * returned.
+     *
+     * @param address The value from which to strip brackets.
+     * @return the input value, stripped from brackets if applicable.
+     * @deprecated Moved to {@link IpUtils#removeBracketsFromIpv6Address(String)}
+     */
+    @Deprecated(since = "5.0.0", forRemoval = true) // Remove in Openfire 5.1 or later.
+    @Nonnull
+    public static String removeBracketsFromIpv6Address(@Nonnull final String address) {
+        return IpUtils.removeBracketsFromIpv6Address(address);
+    }
 
     public static void loadSetupExcludes() {
         Arrays.stream(JiveGlobals.setupExcludePaths).forEach(AuthCheckFilter::addExclude);
