@@ -62,6 +62,7 @@ public class PluginServlet extends HttpServlet {
 
     private static final Logger Log = LoggerFactory.getLogger(PluginServlet.class);
     private static final String CSRF_ATTRIBUTE = "csrf";
+    private static final long MAX_FILE_SIZE = 50 * 1024 * 1024; // 50MB max file size
 
     public static final SystemProperty<Boolean> ALLOW_LOCAL_FILE_READING = SystemProperty.Builder.ofType( Boolean.class )
         .setKey( "plugins.servlet.allowLocalFileReading" )
@@ -124,7 +125,12 @@ public class PluginServlet extends HttpServlet {
     }
 
     private static void setCSRF(final HttpServletRequest request) {
-        final String csrf = StringUtils.randomString(32);
+        byte[] randomBytes = new byte[32];
+        new SecureRandom().nextBytes(randomBytes);
+        final String csrf = Base64.getEncoder().encodeToString(randomBytes);
+        
+        // Set token expiration to 30 minutes from now
+        request.getSession().setAttribute(CSRF_ATTRIBUTE + ".expiry", System.currentTimeMillis() + (30 * 60 * 1000));
         request.getSession().setAttribute(CSRF_ATTRIBUTE, csrf);
         request.setAttribute(CSRF_ATTRIBUTE, csrf);
     }
@@ -136,7 +142,25 @@ public class PluginServlet extends HttpServlet {
         }
 
         final String sessionCsrf = (String) request.getSession().getAttribute(CSRF_ATTRIBUTE);
-        return sessionCsrf != null && sessionCsrf.equals(request.getParameter(CSRF_ATTRIBUTE));
+        final Long expiry = (Long) request.getSession().getAttribute(CSRF_ATTRIBUTE + ".expiry");
+        
+        if (sessionCsrf == null || expiry == null) {
+            Log.warn("CSRF token or expiry missing in session");
+            return false;
+        }
+
+        if (System.currentTimeMillis() > expiry) {
+            Log.warn("CSRF token expired");
+            return false;
+        }
+
+        final String requestCsrf = request.getParameter(CSRF_ATTRIBUTE);
+        if (requestCsrf == null) {
+            Log.warn("CSRF token missing in request");
+            return false;
+        }
+
+        return sessionCsrf.equals(requestCsrf);
     }
 
     private PluginMetadata getPluginMetadataFromPath(final String pathInfo) {
@@ -533,7 +557,25 @@ public class PluginServlet extends HttpServlet {
         }
 
         Path pluginDirectory = JiveGlobals.getHomePath().resolve("plugins");
+        
+        // Validate path components
+        if (parts[1].contains("..") || contextPath.contains("..")) {
+            Log.warn("Rejected path traversal attempt: {}", pathInfo);
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            return;
+        }
+        
         Path file = pluginDirectory.resolve(parts[1]).resolve("web").resolve(contextPath);
+
+        // Normalize paths for comparison
+        Path normalizedFile = file.normalize().toAbsolutePath();
+        Path normalizedPluginDir = pluginDirectory.normalize().toAbsolutePath();
+        
+        if (!normalizedFile.startsWith(normalizedPluginDir)) {
+            Log.warn("Rejected access attempt outside plugin directory: {}", pathInfo);
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            return;
+        }
 
         if ( !ALLOW_LOCAL_FILE_READING.getValue() ) {
             // Ensure that the file that's being served is a file that is part of Openfire. This guards against
@@ -561,9 +603,16 @@ public class PluginServlet extends HttpServlet {
         response.setContentType(contentType);
         // Write out the resource to the user.
         Log.trace("Handling 'other' request with a response content type of {}: {}", contentType, pathInfo);
-        // Set the size of the file.
-        response.setContentLength((int) Files.size(file));
-        Files.readAllBytes(file);
+        // Check file size before serving
+        long fileSize = Files.size(file);
+        if (fileSize > MAX_FILE_SIZE) {
+            Log.warn("Rejected serving file exceeding size limit: {}", file);
+            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
+            return;
+        }
+
+        // Set the size of the file
+        response.setContentLength((int) fileSize);
 
         try (final BufferedInputStream in = new BufferedInputStream(Files.newInputStream(file));
              final ServletOutputStream out = response.getOutputStream())
