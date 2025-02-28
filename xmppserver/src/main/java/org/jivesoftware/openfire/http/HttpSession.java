@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2005-2008 Jive Software, 2017-2023 Ignite Realtime Foundation. All rights reserved.
+ * Copyright (C) 2005-2008 Jive Software, 2017-2025 Ignite Realtime Foundation. All rights reserved.
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,6 +52,7 @@ import java.io.StringReader;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
 import java.security.cert.X509Certificate;
+import java.text.MessageFormat;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
@@ -213,9 +214,7 @@ public class HttpSession extends LocalClientSession {
         this.majorVersion = majorVersion;
         this.minorVersion = minorVersion;
 
-        if (Log.isDebugEnabled()) {
-            Log.debug("Session {} being opened with initial connection {}", getStreamID(), vConnection.toString());
-        }
+        Log.debug("Session {} being opened with initial connection {}", getStreamID(), vConnection.toString());
     }
 
     /**
@@ -554,12 +553,13 @@ public class HttpSession extends LocalClientSession {
 
         // Schedule in-order.
         synchronized (router) {
-            HttpBindManager.getInstance().getSessionManager().execute(() -> {
+            HttpBindManager.getInstance().getSessionManager().execute(this, () -> {
+                Log.trace("Stream {}: sending {} packet(s)", streamID, packetsToSend.size());
                 for (Element packet : packetsToSend) {
                     try {
                         router.route(packet);
                     } catch (UnknownStanzaException e) {
-                        Log.error("On session " + getStreamID() + " client provided unknown packet type", e);
+                        Log.error("On session {} client provided unknown packet type: {}", getStreamID(), packet.asXML(), e);
                     }
                 }
             });
@@ -589,17 +589,13 @@ public class HttpSession extends LocalClientSession {
         final HttpConnection connection = new HttpConnection(body, context);
         final StreamID streamID = getStreamID();
         final long rid = body.getRid();
-        if (Log.isDebugEnabled()) {
-            Log.debug( "Creating connection for rid: {} in session {}", rid, streamID );
-        }
+        Log.debug( "Creating connection for rid: {} in session {}", rid, streamID );
         connection.setSession(this);
         context.setTimeout(getWait().toMillis());
         context.addListener(new AsyncListener() {
             @Override
             public void onComplete(AsyncEvent asyncEvent) {
-                if (Log.isTraceEnabled()) {
-                    Log.trace("Session {} Request ID {}, event complete: {}", streamID, rid, asyncEvent);
-                }
+                Log.trace("Session {} Request ID {}, event complete: {}", streamID, rid, asyncEvent);
                 synchronized (connectionQueue) {
                     if (connectionQueue.remove(connection) || !connection.isClosed()) {
                         Log.warn("Discovered a 'complete' event for a BOSH connection that has not been consumed (for session {} with Request ID {}, was closed: {}). This likely is a bug in Openfire.", streamID, rid, connection.isClosed());
@@ -611,9 +607,7 @@ public class HttpSession extends LocalClientSession {
 
             @Override
             public void onTimeout(AsyncEvent asyncEvent) throws IOException {
-                if (Log.isTraceEnabled()) {
-                    Log.trace("Session {} Request ID {}, event timeout: {}. Returning an empty response.", streamID, rid, asyncEvent);
-                }
+                Log.trace("Session {} Request ID {}, event timeout: {}. Returning an empty response.", streamID, rid, asyncEvent);
 
                 try {
                     // If onTimeout does not result in a complete(), the container falls back to default behavior.
@@ -633,9 +627,7 @@ public class HttpSession extends LocalClientSession {
 
             @Override
             public void onError(AsyncEvent asyncEvent) {
-                if (Log.isTraceEnabled()) {
-                    Log.trace("Session {} Request ID {}, event error: {}", streamID, rid, asyncEvent);
-                }
+                Log.trace("Session {} Request ID {}, event error: {}", streamID, rid, asyncEvent);
                 Log.warn("For session {} an unhandled AsyncListener error occurred: ", streamID, asyncEvent.getThrowable());
                 synchronized (connectionQueue) {
                     // There was an error with a connection. Make sure it cannot be consumed again.
@@ -646,9 +638,7 @@ public class HttpSession extends LocalClientSession {
 
             @Override
             public void onStartAsync(AsyncEvent asyncEvent) {
-                if (Log.isTraceEnabled()) {
-                    Log.trace("Session {} Request ID {}, event start: {}", streamID, rid, asyncEvent);
-                }
+                Log.trace("Session {} Request ID {}, event start: {}", streamID, rid, asyncEvent);
                 lastActivity = Instant.now();
             }
         });
@@ -690,9 +680,7 @@ public class HttpSession extends LocalClientSession {
     {
         final long rid = connection.getRequestId();
         final StreamID streamid = getStreamID();
-        if (Log.isDebugEnabled()) {
-            Log.debug( "Adding connection to stream {} with rid {}", streamid, rid );
-        }
+        Log.debug( "Adding connection to stream {} with rid {}", streamid, rid );
 
         // Note that connections can be expected to arrive 'out of order'. The implementation should only use a connection
         // that has a request ID value that's exactly one higher than the last request ID value in the 'gap-less' sequence
@@ -784,9 +772,7 @@ public class HttpSession extends LocalClientSession {
                 // When a new connection has become available, older connections need to be released (allowing the client to
                 // send more data if it needs to).
                 while (!connectionQueue.isEmpty() && connectionQueue.size() > hold) {
-                    if (Log.isTraceEnabled()) {
-                        Log.trace("Stream {}: releasing oldest connection (rid {}), as the amount of open connections ({}) is higher than the requested amount to hold ({}).", streamid, rid, connectionQueue.size(), hold);
-                    }
+                    Log.trace("Stream {}: releasing oldest connection (rid {}), as the amount of open connections ({}) is higher than the requested amount to hold ({}).", streamid, rid, connectionQueue.size(), hold);
                     final HttpConnection openConnection = connectionQueue.peek();
                     assert openConnection != null;
                     if (openConnection.getRequestId() > lastSequentialRequestID) {
@@ -803,6 +789,22 @@ public class HttpSession extends LocalClientSession {
         // OF-2444: Call 'close()' outside of the connectionQueue mutex, to avoid deadlocks.
         if (mustClose) {
             close();
+        }
+    }
+
+    @Override
+    public void close()
+    {
+        // Make the worker pool process this, to help ensure that the 'close' event is being processed in order (eg: not prior to the processing of other data, such as any pending processing of data).
+        synchronized (router) {
+            try {
+                HttpBindManager.getInstance().getSessionManager().execute(this, () -> {
+                    Log.trace("Stream {}: Closing", streamID);
+                    super.close();
+                });
+            } catch (Throwable t) {
+                Log.warn("Unable to close session", t);
+            }
         }
     }
 
@@ -823,8 +825,8 @@ public class HttpSession extends LocalClientSession {
     {
         Log.debug("Session {} requesting a retransmission for rid {}", getStreamID(), connection.getRequestId());
         final Optional<Delivered> deliverable = retrieveDeliverable(connection.getRequestId());
-        if (!deliverable.isPresent()) {
-            Log.warn("Deliverable unavailable for " + connection.getRequestId() + " in session " + getStreamID());
+        if (deliverable.isEmpty()) {
+            Log.warn("Deliverable unavailable for {} in session {}", connection.getRequestId(), getStreamID());
             throw new HttpBindException("Unexpected RID error.", BoshBindingError.itemNotFound);
         }
         connection.deliverBody(asBodyText(deliverable.get().deliverables), true);
@@ -869,17 +871,8 @@ public class HttpSession extends LocalClientSession {
                 }
             }
             lastPoll = time;
-            if (Log.isDebugEnabled()) {
-                Log.debug("Updated session " + getStreamID() +
-                        " lastPoll to " + lastPoll +
-                        " with rid " + connection.getRequestId() +
-                        " lastResponseEmpty = " + lastResponseEmpty  +
-                        " overactivity = " + overactivity +
-                        " deltaFromLastPoll = " + deltaFromLastPoll +
-                        " isPollingSession() = " + localIsPollingSession +
-                        " maxRequests = " + maxRequests +
-                        " pendingConnections = " + pendingConnections);
-            }
+            Log.debug("Updated session {} lastPoll to {} with rid {} lastResponseEmpty = {} overactivity = {} deltaFromLastPoll = {} isPollingSession() = {} maxRequests = {} pendingConnections = {}",
+                      getStreamID(), lastPoll, connection.getRequestId(), lastResponseEmpty, overactivity, deltaFromLastPoll, localIsPollingSession, maxRequests, pendingConnections);
         }
         setLastResponseEmpty(false);
 
@@ -903,9 +896,7 @@ public class HttpSession extends LocalClientSession {
                 }
             }
             String errorMessageStr = errorMessage.toString();
-            if (Log.isDebugEnabled()) {
-                Log.debug(errorMessageStr);
-            }
+            Log.debug(errorMessageStr);
             if (!JiveGlobals.getBooleanProperty("xmpp.httpbind.client.requests.ignoreOveractivity", false)) {
                 throw new HttpBindException(errorMessageStr, BoshBindingError.policyViolation);
             }
@@ -965,7 +956,7 @@ public class HttpSession extends LocalClientSession {
 
         final Optional<HttpConnection> connection = getConnectionReadyForOutboundDelivery();
 
-        if (!connection.isPresent()) {
+        if (connection.isEmpty()) {
             Log.trace("Immediate delivery of pending data to the client on session {} was requested, but no connection is available. The data ({} deliverables) will be re-queued.", getStreamID(), deliverables.size());
             // place pending deliverables back on queue. // FIXME: if other threads have placed pending elements, this will cause a re-order, which might be undesirable.
             pendingElements.addAll(deliverables);
@@ -973,8 +964,9 @@ public class HttpSession extends LocalClientSession {
         }
 
         // OF-2444: deliver asynchronously, to avoid deadlocking issues.
-        HttpBindManager.getInstance().getSessionManager().execute(() -> {
+        HttpBindManager.getInstance().getSessionManager().execute(this, () -> {
             try {
+                Log.trace("Stream {}: Immediate delivery of {} deliverable(s)", streamID, deliverables.size());
                 deliver(connection.get(), deliverables, true);
             } catch (HttpConnectionClosedException e) {
                 /* Connection was closed, try the next one. Indicates a (concurrency?) bug. */
@@ -1116,7 +1108,7 @@ public class HttpSession extends LocalClientSession {
                     conn.getPacketDeliverer().deliver(packet);
                 }
                 catch (UnauthorizedException e) {
-                    Log.error("On session " + getStreamID() + " unable to deliver message to backup deliverer", e);
+                    Log.error("On session {} unable to deliver message to backup deliverer", getStreamID(), e);
                 }
             }
         });
@@ -1471,7 +1463,7 @@ public class HttpSession extends LocalClientSession {
             ", isInitialized=" + isInitialized() +
             ", hasAuthToken=" + (getAuthToken() != null) +
             ", peer address='" + peerAddress +'\'' +
-            ", presence='" + getPresence().toString() + '\'' +
+            ", presence='" + getPresence().toXML() + '\'' +
             ", hold='" + getHold() + '\'' +
             ", wait='" + getWait() + '\'' +
             ", maxRequests='" + getMaxRequests() + '\'' +
